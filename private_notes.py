@@ -30,24 +30,20 @@ class PrivNotes:
       try:
         raw_data = bytes.fromhex(data)
 
-        if len(raw_data) < 16:
+        if len(raw_data) < 48:
           raise ValueError("Invalid serialized data")
 
-        digest = hashes.Hash(hashes.SHA256())
-        digest.update(raw_data)
-        expected = digest.finalize()
-  
         if checksum is not None:
+          digest = hashes.Hash(hashes.SHA256())
+          digest.update(raw_data)
+          expected = digest.finalize()
+
           if not bytes_eq(expected, bytes.fromhex(checksum)):
             raise ValueError()
 
-        self.salt = raw_data[:16]
-        serialized_state = raw_data[16:]
-
-        state = pickle.loads(serialized_state)
-
-        self.kvs = state["kvs"]
-        self.nonce_counter = state["nonce_counter"]
+        self.salt = raw_data[:16] # extract salt
+        self.auth_tag = raw_data[16:48]
+        serialized_state = raw_data[48:]
 
       except:
         raise ValueError("Invalid serialized data")
@@ -62,7 +58,27 @@ class PrivNotes:
     h2 = hmac.HMAC(self.big_key, hashes.SHA256())
     h2.update(b'notes')
     self.notes_key = h2.finalize()
-      
+
+    h3 = hmac.HMAC(self.big_key, hashes.SHA256())
+    h3.update(b'authentication')
+    self.auth_key = h3.finalize()
+
+    digest = hmac.HMAC(self.auth_key, hashes.SHA256())
+    digest.update(raw_data)
+    self.auth_expected = digest.finalize()
+
+    if data is not None:
+      h = hmac.HMAC(self.auth_key, hashes.SHA256())
+      h.update(self.salt + serialized_state)
+      expected_tag = h.finalize()
+
+      if not bytes_eq(expected_tag, self.auth_tag):
+        raise ValueError("Incorrect password or modified data")
+
+      state = pickle.loads(serialized_state)
+
+      self.kvs = state["kvs"]
+      self.nonce_counter = state["nonce_counter"]
 
   def dump(self):
     """Computes a serialized representation of the notes database
@@ -79,7 +95,13 @@ class PrivNotes:
       "nonce_counter": self.nonce_counter
     }
 
-    raw_data = self.salt + pickle.dumps(serialized)
+    serialized_state = pickle.dumps(serialized)
+
+    h = hmac.HMAC(self.auth_key, hashes.SHA256())
+    h.update(self.salt + serialized_state)
+    tag = h.finalize()
+
+    raw_data = self.salt + tag + serialized_state
     ser_data = raw_data.hex()
 
     digest = hashes.Hash(hashes.SHA256())
@@ -129,9 +151,6 @@ class PrivNotes:
        Raises:
          ValueError : if note length exceeds the maximum
     """
-    if len(note) > self.MAX_NOTE_LEN:
-      raise ValueError('Maximum note length exceeded')
-    
     title_key = self._title_key(title)
 
     padded_note = self._encode_note(note)
@@ -170,6 +189,9 @@ class PrivNotes:
 
   def _encode_note(self, note):
     note_bytes = note.encode('ascii')
+
+    if len(note_bytes) > self.MAX_NOTE_LEN:
+      raise ValueError("Invalid note length")
 
     length_prefix = len(note_bytes).to_bytes(2, 'little')
     padding = bytes(self.MAX_NOTE_LEN - len(note_bytes))
