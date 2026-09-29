@@ -71,10 +71,13 @@ class PrivNotes:
       if not bytes_eq(expected_tag, self.auth_tag):
         raise ValueError("Incorrect password or modified data")
 
-      state = pickle.loads(serialized_state)
+      try:
+        state = pickle.loads(serialized_state)
 
-      self.kvs = state["kvs"]
-      self.nonce_counter = state["nonce_counter"]
+        self.kvs = state["kvs"]
+        self.nonce_counter = state["nonce_counter"]
+      except:
+        raise ValueError("Malformed serialized state")
 
   def dump(self):
     """Computes a serialized representation of the notes database
