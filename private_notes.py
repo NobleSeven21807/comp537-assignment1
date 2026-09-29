@@ -22,9 +22,6 @@ class PrivNotes:
     Raises:
       ValueError : malformed serialized format
     """
-    self.password = password
-    self.checksum = checksum
-
     if data is None:
       self.kvs = {}
       self.salt = os.urandom(16)
@@ -36,6 +33,14 @@ class PrivNotes:
         if len(raw_data) < 16:
           raise ValueError("Invalid serialized data")
 
+        digest = hashes.Hash(hashes.SHA256())
+        digest.update(raw_data)
+        expected = digest.finalize()
+  
+        if checksum is not None:
+          if not bytes_eq(expected, bytes.fromhex(checksum)):
+            raise ValueError()
+
         self.salt = raw_data[:16]
         serialized_state = raw_data[16:]
 
@@ -43,8 +48,10 @@ class PrivNotes:
 
         self.kvs = state["kvs"]
         self.nonce_counter = state["nonce_counter"]
+
       except:
         raise ValueError("Invalid serialized data")
+        
     kdf = PBKDF2HMAC(algorithm = hashes.SHA256(), length = 32, salt = self.salt, iterations = 2000000)
     self.big_key = kdf.derive(bytes(password, 'ascii'))
 
@@ -55,17 +62,7 @@ class PrivNotes:
     h2 = hmac.HMAC(self.big_key, hashes.SHA256())
     h2.update(b'notes')
     self.notes_key = h2.finalize()
-
-    if data is not None: 
-      raw_data = bytes.fromhex(data)
-
-      digest = hashes.Hash(hashes.SHA256())
-      digest.update(raw_data)
-      expected = digest.finalize()
-
-      if checksum is not None:
-        if not bytes_eq(expected, bytes.fromhex(checksum)):
-          raise ValueError()
+      
 
   def dump(self):
     """Computes a serialized representation of the notes database
@@ -85,7 +82,11 @@ class PrivNotes:
     raw_data = self.salt + pickle.dumps(serialized)
     ser_data = raw_data.hex()
 
-    return ser_data
+    digest = hashes.Hash(hashes.SHA256())
+    digest.update(raw_data)
+    checksum = digest.finalize().hex()
+
+    return ser_data, checksum
 
 
   def get(self, title):
@@ -98,8 +99,19 @@ class PrivNotes:
       note (str) : the note associated with the requested title if
                        it exists and otherwise None
     """
-    if title in self.kvs:
-      return self.kvs[title]
+    title_key = self._title_key(title)
+
+    if title_key in self.kvs:
+      record = self.kvs[title_key]
+
+      nonce = record[:12]
+      ciphertext = record[12:]
+
+      aesgcm = AESGCM(self.notes_key)
+      plaintext = aesgcm.decrypt(nonce, ciphertext, title_key)
+
+      return self._decode_note(plaintext)
+    
     return None
 
   def set(self, title, note):
@@ -120,13 +132,13 @@ class PrivNotes:
     if len(note) > self.MAX_NOTE_LEN:
       raise ValueError('Maximum note length exceeded')
     
-    h = hmac.HMAC(self.dict_key, hashes.SHA256())
-    h.update(bytes(title, 'ascii'))
-    title_key = h.finalize()
+    title_key = self._title_key(title)
 
-    nonce = self.nonce_counter.to_bytes(12, 'big')
+    padded_note = self._encode_note(note)
+
+    nonce = self.nonce_counter.to_bytes(12, 'little')
     aesgcm = AESGCM(self.notes_key)
-    encrypted_notes = aesgcm.encrypt(nonce, bytes(note, 'ascii'), title_key)
+    encrypted_notes = aesgcm.encrypt(nonce, padded_note, title_key)
 
     self.nonce_counter += 1
 
@@ -143,8 +155,36 @@ class PrivNotes:
          success (bool) : True if the title was removed and False if the title was
                           not found
     """
-    if title in self.kvs:
-      del self.kvs[title]
+    title_key = self._title_key(title)
+
+    if title_key in self.kvs:
+      del self.kvs[title_key]
       return True
 
     return False
+
+  def _title_key(self, title):
+    h = hmac.HMAC(self.dict_key, hashes.SHA256())
+    h.update(title.encode('ascii'))
+    return h.finalize()
+
+  def _encode_note(self, note):
+    note_bytes = note.encode('ascii')
+
+    length_prefix = len(note_bytes).to_bytes(2, 'little')
+    padding = bytes(self.MAX_NOTE_LEN - len(note_bytes))
+
+    return length_prefix + note_bytes + padding
+
+  def _decode_note(self, plaintext):
+    if len(plaintext) != self.MAX_NOTE_LEN + 2:
+      raise ValueError("Invalid encoded note length")
+
+    note_length = int.from_bytes(plaintext[:2], 'little')
+
+    if note_length > self.MAX_NOTE_LEN:
+      raise ValueError("Invalid note length")
+
+    note_bytes = plaintext[2:2 + note_length]
+
+    return note_bytes.decode('ascii')
