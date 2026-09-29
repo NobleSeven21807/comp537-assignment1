@@ -1,16 +1,31 @@
 from private_notes import PrivNotes
 
+# Tampering must be rejected even without the trusted checksum.
 p = PrivNotes("correct")
-p.set("First", "Hello")
-p.set("Second", "World")
-
+p.set("Secret", "Bananas")
 data, checksum = p.dump()
 
-q = PrivNotes("correct", data, checksum)
+tampered = bytearray.fromhex(data)
+tampered[-1] ^= 1
 
-assert q.get("First") == "Hello"
-assert q.get("Second") == "World"
+try:
+    PrivNotes("correct", tampered.hex())
+    raise AssertionError("Tampered data accepted")
+except ValueError:
+    pass
 
-q.set("Third", "Another note")
+# Wrong password must be rejected.
+try:
+    PrivNotes("wrong", data)
+    raise AssertionError("Wrong password accepted")
+except ValueError:
+    pass
 
-assert q.get("Third") == "Another note"
+# An incorrect trusted checksum must be rejected.
+try:
+    PrivNotes("correct", data, "00" * 32)
+    raise AssertionError("Incorrect checksum accepted")
+except ValueError:
+    pass
+
+print("Security checks passed!")

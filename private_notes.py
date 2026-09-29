@@ -74,8 +74,17 @@ class PrivNotes:
       try:
         state = pickle.loads(serialized_state)
 
-        self.kvs = state["kvs"]
-        self.nonce_counter = state["nonce_counter"]
+        kvs = state["kvs"]
+        counter = state["nonce_counter"]
+
+        if not isinstance(kvs, dict):
+          raise ValueError("Invalid dictionary")
+
+        if type(counter) is not int:
+          raise ValueError("Invalid nonce counter")
+
+        self.kvs = kvs
+        self.nonce_counter = counter
       except:
         raise ValueError("Malformed serialized state")
 
