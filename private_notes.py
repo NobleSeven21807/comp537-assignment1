@@ -63,10 +63,6 @@ class PrivNotes:
     h3.update(b'authentication')
     self.auth_key = h3.finalize()
 
-    digest = hmac.HMAC(self.auth_key, hashes.SHA256())
-    digest.update(raw_data)
-    self.auth_expected = digest.finalize()
-
     if data is not None:
       h = hmac.HMAC(self.auth_key, hashes.SHA256())
       h.update(self.salt + serialized_state)
