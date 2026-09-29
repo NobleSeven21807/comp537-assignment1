@@ -1,9 +1,4 @@
 import pickle
-import os
-from cryptography.hazmat.primitives import hashes, hmac
-from cryptography.hazmat.primitives.constant_time import bytes_eq
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 class PrivNotes:
   MAX_NOTE_LEN = 2048;
@@ -22,50 +17,9 @@ class PrivNotes:
     Raises:
       ValueError : malformed serialized format
     """
-    self.password = password
-    self.checksum = checksum
-
-    if data is None:
-      self.kvs = {}
-      self.salt = os.urandom(16)
-      self.nonce_counter = 0
-    else:
-      try:
-        raw_data = bytes.fromhex(data)
-
-        if len(raw_data) < 16:
-          raise ValueError("Invalid serialized data")
-
-        self.salt = raw_data[:16]
-        serialized_state = raw_data[16:]
-
-        state = pickle.loads(serialized_state)
-
-        self.kvs = state["kvs"]
-        self.nonce_counter = state["nonce_counter"]
-      except:
-        raise ValueError("Invalid serialized data")
-    kdf = PBKDF2HMAC(algorithm = hashes.SHA256(), length = 32, salt = self.salt, iterations = 2000000)
-    self.big_key = kdf.derive(bytes(password, 'ascii'))
-
-    h1 = hmac.HMAC(self.big_key, hashes.SHA256())
-    h1.update(b'dictionary')
-    self.dict_key = h1.finalize()
-
-    h2 = hmac.HMAC(self.big_key, hashes.SHA256())
-    h2.update(b'notes')
-    self.notes_key = h2.finalize()
-
-    if data is not None: 
-      raw_data = bytes.fromhex(data)
-
-      digest = hashes.Hash(hashes.SHA256())
-      digest.update(raw_data)
-      expected = digest.finalize()
-
-      if checksum is not None:
-        if not bytes_eq(expected, bytes.fromhex(checksum)):
-          raise ValueError()
+    self.kvs = {}
+    if data is not None:
+      self.kvs = pickle.loads(bytes.fromhex(data))
 
   def dump(self):
     """Computes a serialized representation of the notes database
@@ -77,16 +31,7 @@ class PrivNotes:
       checksum (str) : a hex-encoded checksum for the data used to protect
                        against rollback attacks (up to 32 characters in length)
     """
-    serialized = {
-      "kvs": self.kvs,
-      "nonce_counter": self.nonce_counter
-    }
-
-    raw_data = self.salt + pickle.dumps(serialized)
-    ser_data = raw_data.hex()
-
-    return ser_data
-
+    return pickle.dumps(self.kvs).hex(), ''
 
   def get(self, title):
     """Fetches the note associated with a title.
@@ -120,17 +65,7 @@ class PrivNotes:
     if len(note) > self.MAX_NOTE_LEN:
       raise ValueError('Maximum note length exceeded')
     
-    h = hmac.HMAC(self.dict_key, hashes.SHA256())
-    h.update(bytes(title, 'ascii'))
-    title_key = h.finalize()
-
-    nonce = self.nonce_counter.to_bytes(12, 'big')
-    aesgcm = AESGCM(self.notes_key)
-    encrypted_notes = aesgcm.encrypt(nonce, bytes(note, 'ascii'), title_key)
-
-    self.nonce_counter += 1
-
-    self.kvs[title_key] = nonce + encrypted_notes
+    self.kvs[title] = note
 
 
   def remove(self, title):
